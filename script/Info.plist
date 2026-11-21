@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>VoxsteadAllowsChatGPTPlan</key>
+    <true/>
+    <key>CFBundleExecutable</key>
+    <string>Voxstead</string>
+    <key>CFBundleIdentifier</key>
+    <string>labs.triherm.voxstead</string>
+    <key>CFBundleName</key>
+    <string>Voxstead</string>
+    <key>CFBundleIconFile</key>
+    <string>Voxstead</string>
+    <key>CFBundleDisplayName</key>
+    <string>Voxstead</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.3.17</string>
+    <key>CFBundleVersion</key>
+    <string>23</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>26.0</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Voxstead uses the microphone to transcribe your dictations, meetings, and speakerphone calls.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Voxstead converts speech to text on your Mac.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Voxstead transcribes audio from other apps when you include Mac audio in a meeting or call.</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
