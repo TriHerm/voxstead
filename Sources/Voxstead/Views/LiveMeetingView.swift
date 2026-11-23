@@ -45,6 +45,8 @@ struct LiveMeetingView: View {
     @State private var showTranscript = true
     @State private var compact = false
     @State private var showMeetingOptions = false
+    @State private var showQuickPhrases = false
+    @State private var thought = ""
     @State private var showCards = false
     @State private var showQuestionOptions = false
     @State private var showPreparationOptions = false
@@ -73,6 +75,8 @@ struct LiveMeetingView: View {
         }
         .onDisappear { store.livePanelVisible = false }
         .onChange(of: store.captureID) { _, id in
+            thought = ""
+            showQuickPhrases = false
             if id == nil {
                 openWindow(id: "workspace")
                 dismissWindow(id: "live-meeting")
@@ -118,6 +122,43 @@ struct LiveMeetingView: View {
                 }
                 .layoutPriority(1)
                 Spacer()
+                Button { showQuickPhrases.toggle() } label: {
+                    Image(systemName: "text.book.closed")
+                }
+                .accessibilityLabel("Quick phrases")
+                .help("Quick phrases in five languages, available offline")
+                .popover(isPresented: $showQuickPhrases) {
+                    let settings = preferences(for: meeting)
+                    let spoken = settings.replyLanguage.flatMap { ExplanationLanguage.lookup($0)?.id }
+                        ?? store.meetingLanguage.flatMap(CaptionLanguagePair.code)
+                    VStack(alignment: .leading, spacing: 12) {
+                        if let provider = store.selectedProvider {
+                            Text("Phrase my thought").font(.headline)
+                            TextField("Write what you mean in any language", text: $thought, axis: .vertical)
+                                .lineLimit(1...4)
+                            ExplanationLanguagePicker(selection: Binding(
+                                get: { preferences(for: meeting).replyLanguage ?? "" },
+                                set: { value in updateAssistance(meeting.id) { $0.replyLanguage = value.isEmpty ? nil : value } }
+                            ), label: "Say my reply in", allowsOriginal: true, originalLabel: "Conversation language")
+                            Button("Phrase it with \(provider.name)") {
+                                let draft = thought.trimmingCharacters(in: .whitespacesAndNewlines)
+                                let language = store.meetingLanguage.map { SpokenLanguagePicker.name(for: $0) }
+                                let request = LiveMeetingRequest(action: .suggest, speechLanguage: language,
+                                                                 thoughtToPhrase: draft, phoneCall: settings.isPhoneCall)
+                                guard let current = store.activeMeeting, current.id == meeting.id else { return }
+                                store.ask(session: current, prompt: "Phrase my thought", useTools: false, brief: true, liveRequest: request)
+                                thought = ""
+                                showQuickPhrases = false
+                            }
+                            .disabled(thought.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                      || thought.count > 500 || store.runningID != nil)
+                            if thought.count > 500 { Text("Use 500 characters or fewer.").font(.caption) }
+                            Divider()
+                        }
+                        ConversationPhrasesView(spoken: spoken, meaning: ExplanationLanguage.lookup(settings.explanationLanguage)?.id)
+                    }
+                    .frame(width: 330).padding()
+                }
                 if !phoneCall {
                     Button { compact.toggle() } label: {
                         Image(systemName: compact ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
@@ -192,7 +233,7 @@ struct LiveMeetingView: View {
     }
 
     private func phoneReplyPanel(_ meeting: VoiceSession, canAsk: Bool) -> some View {
-        let waiting = store.runningID == meeting.id
+        let waiting = store.runningID == meeting.id && store.generatingLiveReply
         let recent = store.recentPhoneSpeech
         let settings = preferences(for: meeting)
         return VStack(spacing: 0) {
@@ -217,8 +258,8 @@ struct LiveMeetingView: View {
             .frame(minHeight: 112, maxHeight: .infinity, alignment: .topLeading)
             .padding(12)
 
-            if waiting || store.phoneCurrentReply != nil {
-                phoneSuggestion(meeting, waiting: waiting, showMeaning: settings.showsReplyMeaning)
+            if store.selectedProvider != nil || store.liveReply != nil {
+                suggestedReplyPanel(meeting, waiting: waiting, showMeaning: settings.showsReplyMeaning)
                     .padding(.horizontal, 12)
                     .padding(.bottom, 10)
             }
@@ -270,39 +311,56 @@ struct LiveMeetingView: View {
         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 9))
     }
 
-    private func phoneSuggestion(_ meeting: VoiceSession, waiting: Bool, showMeaning: Bool) -> some View {
+    private func suggestedReplyPanel(_ meeting: VoiceSession, waiting: Bool, showMeaning: Bool) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Label("Suggested reply", systemImage: "text.bubble")
                     .font(.caption.weight(.semibold)).accessibilityAddTraits(.isHeader)
                 Spacer()
-                if !waiting, let reply = store.phoneCurrentReply {
+                if let provider = store.selectedProvider {
+                    Toggle("Auto replies", isOn: Binding(get: { store.autoRepliesEnabled },
+                                                         set: { store.setAutoReplies($0) }))
+                        .toggleStyle(.switch).controlSize(.mini)
+                        .help("Send questions and context to \(provider.name) for suggested replies")
+                }
+                if preferences(for: meeting).isPhoneCall, !waiting, let reply = store.liveReply {
                     Button("Simpler") {
                         store.requestPhoneReply(meeting, focus: .simplify(reply.sentence))
                     }
                     .buttonStyle(.link)
                     .disabled(store.runningID != nil || store.selectedProvider == nil)
                 }
-                Button {
-                    if waiting { store.cancelModel() }
-                    store.showPhoneReply(nil)
-                } label: {
-                    Image(systemName: "xmark")
+                if waiting || store.liveReply != nil {
+                    Button {
+                        if waiting { store.cancelModel() }
+                        store.showLiveReply(nil)
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(waiting ? "Cancel reply" : "Dismiss reply")
                 }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(waiting ? "Cancel reply" : "Dismiss reply")
             }
             if waiting {
                 if store.answerPreview.isEmpty {
                     HStack {
                         ProgressView().controlSize(.small)
-                        Text("Finding a short reply…").font(.callout).foregroundStyle(.secondary)
+                        Text(store.liveReply?.sentence ?? "Finding a short reply…").font(.callout).foregroundStyle(.secondary)
                     }
                 } else {
                     Text(store.answerPreview).font(.title3.weight(.semibold)).textSelection(.enabled)
                 }
-            } else if let reply = store.phoneCurrentReply {
-                ReplySuggestionView(suggestion: reply, copy: store.copyText, showMeaning: showMeaning)
+            } else if let reply = store.liveReply {
+                let phrase = ReplySuggestionView(suggestion: reply, copy: store.copyText, showMeaning: showMeaning)
+                ViewThatFits(in: .vertical) {
+                    phrase.fixedSize(horizontal: false, vertical: true)
+                    ScrollView { phrase.frame(maxWidth: .infinity, alignment: .leading) }.frame(height: 145)
+                }
+                .frame(maxHeight: 145, alignment: .topLeading)
+            } else {
+                Text(store.isPaused ? "Recording paused" : (store.autoRepliesEnabled
+                     ? "Listening for a turn to respond to…" : "Use What should I say? for a reply."))
+                    .font(.callout).foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -312,10 +370,7 @@ struct LiveMeetingView: View {
 
     private func phoneReplyOptions(_ meeting: VoiceSession, waiting: Bool) -> some View {
         Menu {
-            if let provider = store.selectedProvider {
-                Toggle("Suggest on questions (uses \(provider.name))", isOn: Binding(
-                    get: { store.phoneAutoRepliesEnabled }, set: { store.setPhoneAutoReplies($0) }
-                ))
+            if store.selectedProvider != nil {
                 Toggle("Show reply meaning (\(preferences(for: meeting).explanationLanguage))", isOn: Binding(
                     get: { preferences(for: meeting).showsReplyMeaning },
                     set: { enabled in updateAssistance(meeting.id) { $0.replyMeaning = enabled } }
@@ -323,7 +378,7 @@ struct LiveMeetingView: View {
             }
             if let phrase = phoneHoldingPhrase {
                 Button("Give me a moment") {
-                    store.showPhoneReply(ReplySuggestion(sentence: phrase, meaning: nil))
+                    store.showLiveReply(ReplySuggestion(sentence: phrase, meaning: nil))
                 }
                 .disabled(waiting)
             }
@@ -385,7 +440,8 @@ struct LiveMeetingView: View {
     }
 
     private var phoneHoldingPhrase: String? {
-        guard let language = store.meetingLanguage else { return nil }
+        let preferred = store.activeMeeting?.meeting?.assistance?.replyLanguage.flatMap { ExplanationLanguage.lookup($0)?.id }
+        guard let language = preferred ?? store.meetingLanguage else { return nil }
         switch Locale(identifier: language).language.languageCode?.identifier {
         case "en": return "Could you give me a moment to check?"
         case "es": return "¿Me da un momento para verificarlo?"
@@ -395,31 +451,32 @@ struct LiveMeetingView: View {
 
     private func meetingTools(_ meeting: VoiceSession, canAsk: Bool) -> some View {
         VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
-                        if !store.answerPreview.isEmpty || !meeting.exchanges.isEmpty {
-                            answerCard(meeting).id("latest-answer")
-                        }
-                        LiveTranscriptPane(store: store, sessionID: meeting.id,
-                                           preferredLanguage: Binding(
-                                            get: { preferences(for: meeting).explanationLanguage },
-                                            set: { language in updateAssistance(meeting.id) { $0.explanationLanguage = language } }
-                                           ),
-                                           captionsEnabled: Binding(
-                                            get: { preferences(for: meeting).translateCaptions == true },
-                                            set: { enabled in setCaptionTranslation(enabled, for: meeting.id) }
-                                           ),
-                                           isExpanded: $showTranscript)
-                            .id(meeting.id)
-                        if !compact { liveCards(meeting) }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    LiveTranscriptPane(store: store, sessionID: meeting.id,
+                                       preferredLanguage: Binding(
+                                        get: { preferences(for: meeting).explanationLanguage },
+                                        set: { language in updateAssistance(meeting.id) { $0.explanationLanguage = language } }
+                                       ),
+                                       captionsEnabled: Binding(
+                                        get: { preferences(for: meeting).translateCaptions == true },
+                                        set: { enabled in setCaptionTranslation(enabled, for: meeting.id) }
+                                       ),
+                                       isExpanded: $showTranscript)
+                        .id(meeting.id)
+                    if (!store.generatingLiveReply && !store.answerPreview.isEmpty)
+                        || (meeting.exchanges.last.map { $0.replySuggestion == nil } ?? false) {
+                        answerCard(meeting)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
+                    if !compact { liveCards(meeting) }
                 }
-                .onChange(of: meeting.exchanges.last?.id) { _, id in
-                    if id != nil { proxy.scrollTo("latest-answer", anchor: .top) }
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+            }
+            if store.selectedProvider != nil || store.liveReply != nil {
+                suggestedReplyPanel(meeting, waiting: store.generatingLiveReply && store.runningID == meeting.id,
+                                showMeaning: preferences(for: meeting).showsReplyMeaning)
+                    .padding(.horizontal, 12).padding(.bottom, 6)
             }
 
             Divider()
@@ -432,7 +489,7 @@ struct LiveMeetingView: View {
                         Text("Catch me up becomes available once the first line is saved.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    if store.runningID == meeting.id {
+                    if store.runningID == meeting.id && !store.generatingLiveReply {
                         HStack {
                             ProgressView().controlSize(.small)
                             Text(store.modelStatus ?? "Preparing your answer…").font(.caption).foregroundStyle(.secondary)
@@ -477,7 +534,7 @@ struct LiveMeetingView: View {
 
     private func answerCard(_ meeting: VoiceSession) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            if store.runningID == meeting.id && !store.answerPreview.isEmpty {
+            if store.runningID == meeting.id && !store.generatingLiveReply && !store.answerPreview.isEmpty {
                 VStack(alignment: .leading, spacing: 7) {
                     Label("Writing answer…", systemImage: "sparkles")
                         .font(.caption.weight(.medium)).foregroundStyle(.secondary)

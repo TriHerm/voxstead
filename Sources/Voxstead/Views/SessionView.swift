@@ -3,6 +3,7 @@ import SwiftUI
 struct SessionView: View {
     @Bindable var store: WorkspaceStore
     let session: VoiceSession
+    @State private var followSpeech = true
     @State private var question = ""
     @State private var withTools = false
     @State private var editingSpeaker: TranscriptSegment?
@@ -94,7 +95,7 @@ struct SessionView: View {
     private var transcriptBody: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     if !hasTranscript && !active {
                         Text("This session has no transcript yet.").foregroundStyle(.secondary)
                     }
@@ -130,38 +131,74 @@ struct SessionView: View {
                                 }
                         }
                         if active {
-                            ForEach(store.partials.values.sorted { $0.time < $1.time }) {
-                                segmentRow($0).foregroundStyle(.secondary)
+                            ForEach(store.partials.values.sorted { $0.time < $1.time }, id: \.source) { segment in
+                                segmentRow(segment).foregroundStyle(.secondary)
                             }
                         }
                     }
+                    Color.clear.frame(height: 1).id("speech-end")
                 }
                 .frame(maxWidth: 760, alignment: .leading)
                 .padding(.horizontal, 34)
                 .padding(.vertical, 22)
                 .frame(maxWidth: .infinity)
             }
+            .onChange(of: active ? store.partials.mapValues(\.id) : [:], initial: true) {
+                if active && followSpeech { proxy.scrollTo("speech-end", anchor: .bottom) }
+            }
+            .onChange(of: session.segments.last?.id) {
+                if active && followSpeech { proxy.scrollTo("speech-end", anchor: .bottom) }
+            }
+            .onChange(of: followSpeech) {
+                if active && followSpeech { proxy.scrollTo("speech-end", anchor: .bottom) }
+            }
             .onChange(of: store.transcriptJump?.id, initial: true) { _, id in
                 guard let id, session.segments.contains(where: { $0.id == id }) else { return }
+                if active { followSpeech = false }
                 highlightedSegment = id
                 proxy.scrollTo(id, anchor: .center)
                 store.transcriptJump = nil
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if hasTranscript {
-                HStack {
-                    Button { store.copyText(session.transcript) } label: { Label("Copy text", systemImage: "document.on.document") }
-                    Button { store.export(session) } label: { Label("Export…", systemImage: "square.and.arrow.up") }
-                        .disabled(active)
-                    Spacer()
-                    Button { tab = .assistant } label: { Label("Open assistant", systemImage: "sparkle") }
-                        .disabled(active && session.kind != .meeting)
+            VStack(alignment: .leading, spacing: 0) {
+                if active && session.kind == .meeting {
+                    HStack {
+                        Toggle("Follow speech", isOn: $followSpeech)
+                        Spacer()
+                        if store.selectedProvider != nil {
+                            Toggle("Auto replies", isOn: Binding(get: { store.autoRepliesEnabled }, set: store.setAutoReplies))
+                        }
+                    }
+                    .controlSize(.small).padding(.horizontal, 22).padding(.vertical, 8)
+                    if store.generatingLiveReply || store.liveReply != nil {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(store.generatingLiveReply ? "Preparing a reply…" : "Suggested reply")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text(store.generatingLiveReply && !store.answerPreview.isEmpty ? store.answerPreview :
+                                    (store.liveReply?.sentence ?? "")).textSelection(.enabled)
+                            if !store.generatingLiveReply, session.meeting?.assistance?.showsReplyMeaning == true,
+                               let meaning = store.liveReply?.meaning {
+                                Text(meaning).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                            }
+                        }
+                        .padding(.horizontal, 22).padding(.bottom, 8)
+                    }
                 }
-                .padding(.horizontal, 22)
-                .padding(.vertical, 12)
-                .background(.bar)
-                .overlay(alignment: .top) { Divider() }
+                if hasTranscript {
+                    HStack {
+                        Button { store.copyText(session.transcript) } label: { Label("Copy text", systemImage: "document.on.document") }
+                        Button { store.export(session) } label: { Label("Export…", systemImage: "square.and.arrow.up") }
+                            .disabled(active)
+                        Spacer()
+                        Button { tab = .assistant } label: { Label("Open assistant", systemImage: "sparkle") }
+                            .disabled(active && session.kind != .meeting)
+                    }
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 12)
+                    .background(.bar)
+                    .overlay(alignment: .top) { Divider() }
+                }
             }
         }
     }

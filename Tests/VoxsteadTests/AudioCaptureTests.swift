@@ -307,7 +307,7 @@ struct AudioCaptureTests {
         let locale = Locale(identifier: "en-US")
         let preset = SpeechCapture.livePreset(for: .meeting, phoneCall: phoneCall)
         #expect(preset.reportingOptions.contains(.volatileResults))
-        #expect(preset.reportingOptions.contains(.fastResults) == phoneCall)
+        #expect(preset.reportingOptions.contains(.fastResults))
         let transcriber = SpeechTranscriber(locale: locale, preset: preset)
         let format = try #require(await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]))
         let analyzer = SpeechAnalyzer(modules: [transcriber])

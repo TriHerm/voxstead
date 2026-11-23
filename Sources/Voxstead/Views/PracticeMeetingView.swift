@@ -72,6 +72,8 @@ struct PracticeMeetingView: View {
                 }
 
                 Divider()
+                ConversationPhrasesView(spoken: "en", meaning: "es", practice: true)
+                Divider()
                 HStack(spacing: 12) {
                     Button("Restart example") { reset() }.buttonStyle(.link)
                     Spacer()

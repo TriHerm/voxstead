@@ -4,6 +4,7 @@ import Foundation
 struct MeetingAssistance: Codable, Sendable, Equatable {
     var mode: Mode = .conversation
     var explanationLanguage = "English"
+    var replyLanguage: String?
     var replyMeaning: Bool?
     var translateCaptions: Bool?
     var preparation: String?

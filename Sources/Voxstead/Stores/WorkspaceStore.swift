@@ -213,10 +213,14 @@ final class WorkspaceStore {
 
     var phoneTurns = PhoneCallTurns()
     var phoneVoiceStatus: PhoneVoiceStatus = .loading
-    var phoneAutoProviderID: UUID?
-    var phoneAutomaticRequest = false
-    var phoneCurrentReply: ReplySuggestion?
-    var phoneReplyIsAutomatic = false
+    @ObservationIgnored var autoReplyFailures = 0
+    var autoReplyProviderID: UUID?
+    var automaticReplyInProgress = false
+    var liveReply: ReplySuggestion?
+    private(set) var generatingLiveReply = false
+    @ObservationIgnored var pendingReplyTurn: TranscriptSegment?
+    @ObservationIgnored var meetingReplyTask: Task<Void, Never>?
+    @ObservationIgnored var lastMeetingReplyTurn: [AudioSource: Double] = [:]
     @ObservationIgnored var phoneWords: [UUID: [PhoneTimedWord]] = [:]
     @ObservationIgnored var phoneTurnTask: Task<Void, Never>?
     @ObservationIgnored var phoneTurnGeneration: UUID?
@@ -238,7 +242,10 @@ final class WorkspaceStore {
     @ObservationIgnored private var modelTask: Task<Void, Never>?
     @ObservationIgnored private var pendingApproval: CheckedContinuation<Bool, Never>?
 
-    init(library: LibraryFile = .userLibrary) {
+    @ObservationIgnored private let makeCapture: @MainActor () -> SpeechCapture
+
+    init(library: LibraryFile = .userLibrary, makeCapture: @escaping @MainActor () -> SpeechCapture = { SpeechCapture() }) {
+        self.makeCapture = makeCapture
         self.library = library
         firstLaunch = !FileManager.default.fileExists(atPath: library.url.path)
         do {
@@ -327,8 +334,9 @@ final class WorkspaceStore {
         if select { selected = session.id }
         error = nil
         captureID = session.id
-        if phoneCall {
-            phoneAutoProviderID = assistance?.automaticPhoneReplies == true ? selectedProvider?.id : nil
+        if kind == .meeting {
+            autoReplyFailures = 0
+            autoReplyProviderID = assistance?.automaticPhoneReplies == true ? selectedProvider?.id : nil
         }
         captureTarget = useSystemAudio ? targetBundle : nil
         captureMicrophoneID = document.settings.microphoneID
@@ -341,7 +349,7 @@ final class WorkspaceStore {
     }
 
     private func startCapturePhase(_ session: VoiceSession, systemAudio: Bool) {
-        let service = SpeechCapture()
+        let service = makeCapture()
         let id = session.id
         let resuming = isPaused
         let offset = resuming ? max(0, Date.now.timeIntervalSince(session.created)) : 0
@@ -443,14 +451,21 @@ final class WorkspaceStore {
             partials[segment.source] = segment.text.isEmpty ? nil : segment
         }
         if phoneCall {
-            if phoneTurns.separateInputs, segment.source == .system, !segment.text.isEmpty {
-                phoneTurns.lastMacTranscriptUpdate = .now
+            if phoneTurns.separateInputs, !segment.text.isEmpty {
+                if segment.source == .system { phoneTurns.lastMacTranscriptUpdate = .now }
+                else { phoneTurns.lastMicTranscriptUpdate = .now }
             }
             if phoneWords.count > 24 {
                 let current = Set(document.sessions[index].segments.suffix(8).map(\.id) + partials.values.map(\.id))
                 phoneWords = phoneWords.filter { current.contains($0.key) }
             }
-            considerPhoneReply()
+            if !phoneTurns.separateInputs && (phoneTurns.ownSlot == nil || phoneVoiceStatus == .unavailable) {
+                considerMeetingReply(segment, final: isFinal)
+            } else {
+                considerPhoneReply()
+            }
+        } else if document.sessions[index].kind == .meeting {
+            considerMeetingReply(segment, final: isFinal)
         }
     }
 
@@ -579,8 +594,8 @@ final class WorkspaceStore {
 
     private func endCapture(id: UUID) {
         stopPhoneTurnTracking()
-        phoneAutoProviderID = nil
-        phoneCurrentReply = nil
+        autoReplyProviderID = nil
+        liveReply = nil
         setLiveAutomation(false)
         captureID = nil
         captureStatus = nil
@@ -895,7 +910,7 @@ final class WorkspaceStore {
         if liveRequest?.action == .prepare {
             let notes = snapshot.meeting?.assistance?.preparation ?? ""
             guard !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        } else {
+        } else if liveRequest?.thoughtToPhrase == nil {
             guard !snapshot.segments.isEmpty else { return }
         }
         guard let profile = document.settings.providers.first(where: { $0.id == providerID }) else {
@@ -904,21 +919,21 @@ final class WorkspaceStore {
         }
         let servers = useTools ? document.settings.servers.filter(\.enabled) : []
         let isSuggestion = liveRequest?.action == .suggest
+        generatingLiveReply = live && isSuggestion
         runModelJob(id: session.id, status: servers.isEmpty ? "Asking \(profile.name)…" : "Connecting to MCP servers…",
-                    phoneAutomatic: liveRequest?.automaticPhoneReply == true) {
+                    automaticReply: liveRequest?.automaticReply == true) {
             let answer = try await self.runModel(snapshot, prompt: instruction ?? prompt, profile: profile,
                                                  servers: servers, live: live, brief: brief, liveRequest: liveRequest)
             try Task.checkCancellation()
-            if liveRequest?.shouldSkipPhoneAnswer(answer) == true {
-                self.phoneCurrentReply = nil
+            if liveRequest?.shouldSkipAutomaticAnswer(answer) == true {
                 return
             }
             let suggestion = isSuggestion ? try ReplySuggestion.decode(
                 answer, includeMeaning: snapshot.meeting?.assistance?.showsReplyMeaning ?? false,
                 maximumSentences: liveRequest?.phoneCall == true ? 2 : nil
             ) : nil
-            if live, liveRequest?.phoneCall == true {
-                self.showPhoneReply(suggestion, automatically: liveRequest?.automaticPhoneReply == true)
+            if live, isSuggestion, self.captureID == session.id {
+                self.showLiveReply(suggestion)
             }
             let exchange = Exchange(prompt: prompt, answer: suggestion?.sentence ?? answer,
                                     provider: profile.name, replySuggestion: suggestion)
@@ -928,27 +943,36 @@ final class WorkspaceStore {
 
     func updateModelStatus(_ status: String) { modelStatus = status }
 
-    func runModelJob(id: UUID, status: String, phoneAutomatic: Bool = false,
+    func runModelJob(id: UUID, status: String, automaticReply: Bool = false,
                      operation: @escaping @MainActor () async throws -> Void) {
         guard modelTask == nil, !isQuitting else { return }
         runningID = id
         error = nil
         modelStatus = status
         answerPreview = ""
-        phoneAutomaticRequest = phoneAutomatic
+        automaticReplyInProgress = automaticReply
         modelTask = Task {
             defer {
                 runningID = nil
                 modelStatus = nil
                 answerPreview = ""
                 modelTask = nil
-                phoneAutomaticRequest = false
+                generatingLiveReply = false
+                automaticReplyInProgress = false
             }
-            do { try await operation() }
+            do {
+                try await operation()
+                if automaticReply && !Task.isCancelled { autoReplyFailures = 0 }
+            }
             catch {
                 if !Task.isCancelled {
-                    if phoneAutomatic { phoneAutoProviderID = nil }
-                    self.error = error.localizedDescription
+                    if automaticReply { autoReplyFailures += 1 }
+                    if automaticReply && autoReplyFailures >= 3 {
+                        autoReplyProviderID = nil
+                        self.error = "Auto replies paused after three failed requests. \(error.localizedDescription)"
+                    } else {
+                        self.error = error.localizedDescription
+                    }
                 }
             }
         }
@@ -980,12 +1004,12 @@ final class WorkspaceStore {
         let isSuggestion = liveRequest?.action == .suggest
         let preview: (@MainActor @Sendable (String) -> Void)?
         let phoneReply = liveRequest?.phoneCall == true
-        if live, servers.isEmpty, profile.kind == .chatGPT, (!isSuggestion || phoneReply) {
+        if live, servers.isEmpty, profile.kind == .chatGPT {
             preview = { [weak self] text in
                 guard let self, self.captureID == session.id, self.runningID == session.id,
                       !Task.isCancelled else { return }
-                if phoneReply {
-                    if self.answerPreview.isEmpty, let sentence = ReplySuggestion.streamedSentence(in: text, maximumSentences: 2) {
+                if isSuggestion {
+                    if self.answerPreview.isEmpty, let sentence = ReplySuggestion.streamedSentence(in: text, maximumSentences: phoneReply ? 2 : nil) {
                         self.answerPreview = sentence
                     }
                 } else {
@@ -996,7 +1020,7 @@ final class WorkspaceStore {
             preview = nil
         }
         let model = ModelClient(profile: profile, key: try Keychain.read(profile.id),
-                                session: phoneReply ? ModelClient.phoneReplySession : nil, onPreview: preview)
+                                session: live && isSuggestion ? ModelClient.phoneReplySession : nil, onPreview: preview)
         var connections: [MCPConnection] = []
         var tools: [ConnectedTool] = []
         do {
@@ -1102,6 +1126,8 @@ final class WorkspaceStore {
         pendingApproval = nil
         pending?.resume(returning: allow)
     }
+
+    func waitForCurrentModelJob() async { await modelTask?.value }
 
     func cancelModel() {
         modelTask?.cancel()

@@ -6,6 +6,49 @@ import Testing
 struct TransportTests {
     private static let fixture = Bundle.module.url(forResource: "mcp_fixture", withExtension: "py")!
 
+    @MainActor private final class ReplayCapture: SpeechCapture {
+        var receive: ((TranscriptSegment, Bool) -> Void)?
+
+        override func start(locale: Locale, systemAudio: Bool, targetBundle: String?, microphoneID: String?,
+                            whisper: WhisperEngine?, vocabulary: [String], kind: SessionKind, phoneCall: Bool,
+                            speakerStream: PhoneSpeakerStream?, onPhoneWords: ((UUID, [PhoneTimedWord]) -> Void)?,
+                            onUpdate: @escaping (TranscriptSegment, Bool) -> Void,
+                            onFailure: @escaping @MainActor @Sendable (CaptureIssue) -> Void) async throws {
+            receive = onUpdate
+        }
+    }
+
+    @MainActor @Test func liveRevisionsTriggerOneVisibleReplyInEachLanguage() async throws {
+        let (server, port) = try launchFixtureHTTP()
+        defer { server.terminate() }
+        let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let library = LibraryFile(url: folder.appending(path: "library.json"))
+        let profile = ProviderProfile(kind: .compatible, endpoint: "http://127.0.0.1:\(port)/v1", model: "bilingual-auto")
+        try library.save(WorkspaceDocument(settings: WorkspaceSettings(providers: [profile])))
+        let capture = ReplayCapture()
+        let store = WorkspaceStore(library: library, makeCapture: { capture })
+        _ = try #require(store.startCapture(.meeting, meetingAudio: true, assistance: .init(automaticPhoneReplies: true)))
+        try await waitFor { store.captureReady }
+        let receive = try #require(capture.receive)
+        for (time, text, answer) in [(1.0, "Puedes confirmar la fecha", "Voy a comprobarlo."), (8.0, "Can you confirm the date", "Let me check.")] {
+            let count = store.activeMeeting?.exchanges.count ?? 0
+            var partial = TranscriptSegment(time: time, source: .system, text: text)
+            for _ in 0..<8 {
+                receive(partial, false)
+                receive(.init(time: time, source: .microphone, text: "mm"), false)
+                #expect(store.partials[.system]?.text == partial.text)
+                try await Task.sleep(for: .milliseconds(100))
+                partial.text += " "
+            }
+            try await waitFor { store.liveReply?.sentence == answer }
+            receive(partial, true)
+            #expect(store.activeMeeting?.exchanges.count == count + 1)
+        }
+        store.stopCapture()
+        try await waitFor { store.captureID == nil }
+    }
+
     @Test func modelCatalogUsesProviderAuthAndPagination() async throws {
         let (server, port) = try launchFixtureHTTP()
         defer { if server.isRunning { server.terminate() } }
