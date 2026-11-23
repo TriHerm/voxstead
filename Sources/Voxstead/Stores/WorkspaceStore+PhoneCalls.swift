@@ -14,20 +14,19 @@ extension WorkspaceStore {
         }.suffix(8))
     }
 
-    var phoneAutoRepliesEnabled: Bool {
+    var autoRepliesEnabled: Bool {
         guard let provider = selectedProvider else { return false }
-        return phoneAutoProviderID == provider.id
+        return autoReplyProviderID == provider.id
     }
 
-    func showPhoneReply(_ reply: ReplySuggestion?, automatically: Bool = false) {
-        phoneReplyIsAutomatic = automatically
-        phoneCurrentReply = reply
+    func showLiveReply(_ reply: ReplySuggestion?) {
+        liveReply = reply
     }
 
     func startPhoneTurnTracking(phaseStart: Double, separateInputs: Bool) -> PhoneSpeakerStream? {
         stopPhoneTurnTracking()
         phoneTurns = PhoneCallTurns(phaseStart: phaseStart, separateInputs: separateInputs)
-        phoneCurrentReply = nil
+        liveReply = nil
         phoneWords = [:]
         lastMacPhoneReplyRequest = nil
         if separateInputs {
@@ -37,7 +36,7 @@ extension WorkspaceStore {
                     do { try await Task.sleep(for: .milliseconds(150)) }
                     catch { return }
                     guard let self else { return }
-                    if self.phoneAutoRepliesEnabled { self.considerPhoneReply() }
+                    if self.autoRepliesEnabled { self.considerPhoneReply() }
                 }
             }
             return nil
@@ -56,17 +55,21 @@ extension WorkspaceStore {
             } catch {
                 guard let self, !Task.isCancelled, self.phoneTurnGeneration == generation else { return }
                 self.phoneVoiceStatus = .unavailable
-                if self.phoneAutomaticRequest { self.cancelModel() }
+                if self.automaticReplyInProgress { self.cancelModel() }
             }
         }
         return stream
     }
 
     func stopPhoneTurnTracking() {
+        pendingReplyTurn = nil
+        meetingReplyTask?.cancel()
+        meetingReplyTask = nil
+        lastMeetingReplyTurn.removeAll()
         phoneTurnTask?.cancel()
         phoneTurnTask = nil
         phoneTurnGeneration = nil
-        if phoneAutomaticRequest { cancelModel() }
+        if automaticReplyInProgress { cancelModel() }
     }
 
     private func phoneSpeakerReady(generation: UUID) {
@@ -80,17 +83,22 @@ extension WorkspaceStore {
         considerPhoneReply()
     }
 
-    func setPhoneAutoReplies(_ enabled: Bool) {
-        phoneAutoProviderID = enabled ? selectedProvider?.id : nil
+    func setAutoReplies(_ enabled: Bool) {
+        autoReplyFailures = 0
+        autoReplyProviderID = enabled ? selectedProvider?.id : nil
         phoneTurns.markRequested(through: phoneTurns.speakers.through)
         lastMacPhoneReplyRequest = .now
-        if !enabled && phoneAutomaticRequest { cancelModel() }
+        pendingReplyTurn = nil
+        meetingReplyTask?.cancel()
+        if !enabled && automaticReplyInProgress { cancelModel() }
     }
 
     func identifyPhoneVoice(_ speech: TranscriptSegment) {
         guard captureReady, phoneVoiceStatus == .ready, let slot = phoneTurns.slot(for: speech) else { return }
-        if phoneAutomaticRequest { cancelModel() }
-        phoneCurrentReply = nil
+        if automaticReplyInProgress { cancelModel() }
+        liveReply = nil
+        pendingReplyTurn = nil
+        meetingReplyTask?.cancel()
         phoneTurns.identifySelf(as: slot)
         if let id = activeMeeting?.id {
             // Name recent lines once the user maps the local diarizer's voice slot.
@@ -107,6 +115,14 @@ extension WorkspaceStore {
         }
     }
 
+    private func userStartedSpeaking() {
+        guard automaticReplyInProgress else { return }
+        if !answerPreview.isEmpty {
+            showLiveReply(ReplySuggestion(sentence: answerPreview, meaning: nil))
+        }
+        cancelModel()
+    }
+
     func considerPhoneReply() {
         guard captureReady, let meeting = activeMeeting else { return }
         if phoneVoiceStatus == .separateInputs {
@@ -116,27 +132,25 @@ extension WorkspaceStore {
         guard phoneVoiceStatus == .ready, let latest = recentPhoneSpeech.last else { return }
         phoneTurns.observeCaller(in: latest)
         if phoneTurns.userHasStartedTalking {
-            if phoneReplyIsAutomatic, phoneCurrentReply != nil { showPhoneReply(nil) }
-            if phoneAutomaticRequest { cancelModel() }
+            userStartedSpeaking()
             return
         }
-        guard phoneAutoRepliesEnabled, runningID == nil, !isQuitting,
+        guard autoRepliesEnabled, runningID == nil, !isQuitting,
               let turn = phoneTurns.replyOpportunity(for: latest) else { return }
         phoneTurns.markRequested(through: turn.end, from: turn.start)
         requestPhoneReply(meeting, automatically: true)
     }
 
     private func considerMacAudioPhoneReply(_ meeting: VoiceSession) {
-        let micSignal = captureLastSignal(for: .microphone)
-        if let micSignal, let request = lastMacPhoneReplyRequest, micSignal > request {
-            if phoneReplyIsAutomatic, phoneCurrentReply != nil { showPhoneReply(nil) }
-            if phoneAutomaticRequest { cancelModel() }
+        let micSpeech = phoneTurns.lastMicTranscriptUpdate
+        if let micSpeech, let request = lastMacPhoneReplyRequest, micSpeech > request {
+            userStartedSpeaking()
         }
-        guard phoneAutoRepliesEnabled, runningID == nil, !isQuitting,
+        guard autoRepliesEnabled, runningID == nil, !isQuitting,
               let latest = recentPhoneSpeech.last(where: { $0.source == .system }),
               let turn = phoneTurns.macAudioReplyOpportunity(
                 for: latest, now: .now, lastMacSignal: captureLastSignal(for: .system),
-                lastMicSignal: micSignal, enabledSince: lastMacPhoneReplyRequest
+                lastMicSignal: micSpeech, enabledSince: lastMacPhoneReplyRequest
               ) else { return }
         phoneTurns.markRequested(through: turn.upperBound, from: turn.lowerBound)
         lastMacPhoneReplyRequest = .now
@@ -151,7 +165,7 @@ extension WorkspaceStore {
         }
         let language = meetingLanguage.flatMap { Locale(identifier: "en").localizedString(forIdentifier: $0) }
         let request = LiveMeetingRequest(action: .suggest, speechLanguage: language, phoneCall: true,
-                                         automaticPhoneReply: automatically, phoneReplyFocus: focus)
+                                         automaticReply: automatically, phoneReplyFocus: focus)
         ask(session: meeting, prompt: request.action.title, useTools: false, brief: true, liveRequest: request)
     }
 }

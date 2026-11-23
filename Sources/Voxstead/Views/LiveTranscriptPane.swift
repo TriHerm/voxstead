@@ -42,8 +42,9 @@ struct LiveTranscriptPane: View {
     }
 
     private var rows: [Row] {
-        ((meeting?.segments ?? []).map { Row(segment: $0) } + store.partials.values.map { Row(segment: $0, isPartial: true) })
-            .sorted { $0.segment.time < $1.segment.time }
+        let finals = (meeting?.segments ?? []).sorted { $0.time < $1.time }.map { Row(segment: $0) }
+        let live = store.partials.values.sorted { $0.time < $1.time }.map { Row(segment: $0, isPartial: true) }
+        return finals + live
     }
 
     var body: some View {
@@ -125,6 +126,9 @@ struct LiveTranscriptPane: View {
                     }
                 }
                 .frame(maxHeight: 245)
+                .onChange(of: rows.last?.id) { _, _ in
+                    if followLatest { proxy.scrollTo("latest", anchor: .bottom) }
+                }
                 .onChange(of: rows.last?.segment.text, initial: true) { _, _ in
                     if followLatest { proxy.scrollTo("latest", anchor: .bottom) }
                 }
@@ -188,6 +192,25 @@ struct LiveTranscriptPane: View {
         var queue = CaptionQueue()
         let translator = LocalCaptionTranslator(target: target)
         var lastRecognition: String?
+        // Coalesce changes during translation and read the latest speech when the worker is free.
+        let (changes, signal) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let observer = Task { @MainActor in
+            let updates = Observations {
+                (meeting?.segments.last?.id, store.partials, store.meetingLanguage)
+            }
+            for await _ in updates {
+                if Task.isCancelled { break }
+                signal.yield(())
+            }
+            signal.finish()
+        }
+        var timer: Task<Void, Never>?
+        defer {
+            observer.cancel()
+            timer?.cancel()
+            signal.finish()
+        }
+        var events = changes.makeAsyncIterator()
         while !Task.isCancelled {
             let snapshot = await MainActor.run {
                 guard let meeting, run == current else { return nil as (finals: [TranscriptSegment], partials: [TranscriptSegment], recognition: String?)? }
@@ -199,16 +222,24 @@ struct LiveTranscriptPane: View {
                 translator.resetDetectedLanguages()
                 lastRecognition = snapshot.recognition
             }
-            guard let work = queue.next(recentFinals: snapshot.finals, partials: snapshot.partials, at: .now) else {
-                do { try await Task.sleep(for: .milliseconds(120)) }
-                catch { return }
+            let now = ContinuousClock.now
+            guard let work = queue.next(recentFinals: snapshot.finals, partials: snapshot.partials, at: now) else {
+                timer?.cancel()
+                if let deadline = queue.nextPreviewDeadline(for: snapshot.partials, at: now) {
+                    timer = Task {
+                        do { try await Task.sleep(until: deadline, clock: .continuous) }
+                        catch { return }
+                        signal.yield(())
+                    }
+                }
+                guard await events.next() != nil else { return }
                 continue
             }
             do {
                 let result = try await translator.translate(work, recognitionLanguage: snapshot.recognition)
                 try Task.checkCancellation()
                 await MainActor.run {
-                    guard run == current, meeting != nil else { return }
+                    guard !Task.isCancelled, run == current, meeting != nil else { return }
                     switch result {
                     case .translation(let text, let source):
                         captionStatus = nil

@@ -139,6 +139,10 @@ class Handler(BaseHTTPRequestHandler):
                 "sentence": "¿Podemos confirmar los 8,000 acordados para el prototipo?",
                 "meaning": "Can we confirm the 8,000 we agreed on for the prototype?" if include_meaning else None,
             })}
+        elif request["model"] == "bilingual-auto":
+            excerpt = question.split("Turn to respond to:")[-1]
+            sentence = "Voy a comprobarlo." if "Puedes confirmar" in excerpt else "Let me check."
+            message = {"content": json.dumps({"sentence": sentence, "meaning": None})}
         elif request["model"] == "phone-reply-fixture":
             system = turns[0]["content"]
             if (not all(phrase in question for phrase in (

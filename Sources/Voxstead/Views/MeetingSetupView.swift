@@ -12,6 +12,7 @@ struct MeetingSetupView: View {
     @State private var showPreparation: Bool
     @State private var preparation: String
     @State private var showLanguageSupport = false
+    @AppStorage("suggestedReplyLanguage") private var replyLanguage = ""
     @State private var explanationLanguage: String
     @State private var translateCaptions: Bool
     @State private var includeMeaning: Bool
@@ -19,6 +20,7 @@ struct MeetingSetupView: View {
     @State private var speechTerms = ""
     @State private var prepAnswer: String?
     @State private var callLocale = "en-US"
+    @AppStorage("suggestRepliesDuringCapture") private var automaticReplies = true
     @State private var callerName = ""
 
     private struct CaptureApp: Identifiable {
@@ -78,6 +80,13 @@ struct MeetingSetupView: View {
                         }
                         .padding(13)
                         .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 13))
+                    }
+                    if let provider = store.selectedProvider {
+                        ExplanationLanguagePicker(selection: $replyLanguage, label: "Say my reply in", allowsOriginal: true,
+                                                  originalLabel: "Conversation language")
+                        Toggle("Suggest replies automatically", isOn: $automaticReplies)
+                        Text("Shares recent conversation and preparation notes with \(provider.name) for questions, requests, and longer turns from other participants.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     if let setupError {
                         Label(setupError, systemImage: "exclamationmark.circle")
@@ -303,9 +312,11 @@ struct MeetingSetupView: View {
         let terms = SpeechVocabulary.meetingTerms(from: speechTerms)
         let assistance = MeetingAssistance(mode: includeMeaning ? .languageSupport : .conversation,
                                            explanationLanguage: explanationLanguage,
+                                           replyLanguage: replyLanguage.isEmpty ? nil : replyLanguage,
                                            translateCaptions: translateCaptions ? true : nil,
                                            preparation: preparation, speechTerms: terms.isEmpty ? nil : terms,
                                            phoneCall: phoneCall ? true : nil,
+                                           automaticPhoneReplies: automaticReplies && store.selectedProvider != nil,
                                            callerName: phoneCall ? callerName : nil)
         if store.startCapture(.meeting, meetingAudio: source != "mic", targetBundle: app?.id,
                               targetName: app?.name, assistance: assistance, meetingLocale: spokenLocale) != nil {

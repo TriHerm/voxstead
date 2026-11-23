@@ -12,6 +12,7 @@ struct PhoneCallTurns {
     private(set) var lastRequestedEnd: Double = 0
     private var lastRequestedStart: Double?
     var speakers = PhoneSpeakerSnapshot()
+    var lastMicTranscriptUpdate: ContinuousClock.Instant?
     var lastMacTranscriptUpdate: ContinuousClock.Instant?
     let phaseStart: Double
     let separateInputs: Bool
@@ -83,7 +84,7 @@ struct PhoneCallTurns {
               speakers.speaker(from: max(latest.start, latest.end - 0.60), to: latest.end) == callerSlot,
               slot(for: speech) == callerSlot,
               let end = speech.endTime, abs(latest.end - (end - phaseStart)) < 0.95,
-              Self.isQuestion(speech.text) else { return nil }
+              (Self.invitesReply(speech.text) || Self.substantiveTurn(speech.text)) else { return nil }
         return latest
     }
 
@@ -101,7 +102,7 @@ struct PhoneCallTurns {
               lastMicSignal.map({ $0 <= lastMacSignal + .milliseconds(100)
                   && now - $0 >= .milliseconds(350) }) ?? true,
               isNewTurn(start: speech.time - phaseStart, end: end - phaseStart),
-              Self.isQuestion(speech.text) else { return nil }
+              (Self.invitesReply(speech.text) || Self.substantiveTurn(speech.text)) else { return nil }
         return (speech.time - phaseStart)..<(end - phaseStart)
     }
 
@@ -120,13 +121,38 @@ struct PhoneCallTurns {
         return speakers.speaker(from: max(latest.start, latest.end - 0.50), to: latest.end) == ownSlot
     }
 
+    static func substantiveTurn(_ text: String) -> Bool {
+        text.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).prefix(9).count == 9
+    }
+
+    static func invitesReply(_ text: String) -> Bool {
+        if isQuestion(text) { return true }
+        let words = text.lowercased().split { !$0.isLetter }
+        let opening = words.drop(while: { ["please", "so", "bueno", "entonces"].contains($0) })
+        let firstTwo = opening.prefix(2).joined(separator: " ")
+        if opening.starts(with: ["let", "me", "know"]) { return true }
+        if ["tell me", "walk me", "share your", "give me", "me gustaría"].contains(firstTwo) {
+            return opening.count >= 3
+        }
+        return opening.count >= 2 && ["cuéntame", "dime", "explícame", "confírmame", "platícame"].contains(opening.first ?? "")
+    }
+
     static func isQuestion(_ text: String) -> Bool {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if clean.last == "?" || clean.last == "？" || clean.hasPrefix("¿") { return true }
-        let words = clean.lowercased().split { !$0.isLetter }
-        guard words.count >= 3 else { return false }
-        let opening = words.drop(while: { ["so", "and", "well", "okay", "ok", "um"].contains($0) })
+        // Recognition often appends the next question to a preceding statement.
+        let clause = clean.split(whereSeparator: { ".!;".contains($0) }).last ?? Substring(clean)
+        let words = clause.lowercased().split { !$0.isLetter }
+        guard words.count >= 2 else { return false }
+        let opening = words.drop(while: { ["so", "and", "well", "okay", "ok", "um", "bueno", "entonces", "oye", "pues", "y"].contains($0) })
         guard let first = opening.first else { return false }
+        let spanishQuestions: Set<Substring> = ["qué", "cuál", "cuáles", "cuándo", "cuánto", "cuántos", "cuántas",
+                                                "cómo", "dónde", "quién", "quiénes", "puedes", "podrías", "puede", "podría"]
+        if spanishQuestions.contains(first) { return true }
+        let prefix = opening.prefix(2).joined(separator: " ")
+        if ["por qué", "a qué", "me puedes", "nos puedes", "me podrías", "te parece", "te gustaría",
+            "que opinas", "que piensas", "cuando puedes", "cuando podemos", "como podemos",
+            "tienes tiempo", "tienes alguna", "estás disponible", "what about", "how about"].contains(prefix) { return true }
         let subjects: Set<Substring> = ["i", "you", "we", "they", "he", "she", "it", "there", "this", "that"]
         let verbs: Set<Substring> = ["am", "is", "are", "was", "were", "do", "does", "did",
                                      "can", "could", "will", "would", "should", "may", "have", "has"]

@@ -85,16 +85,56 @@ extension WorkspaceStore {
         }
     }
 
+    func considerMeetingReply(_ segment: TranscriptSegment, final: Bool) {
+        guard autoRepliesEnabled, captureReady, let id = captureID else { return }
+        // A late final may arrive while the recognizer is already previewing the next turn.
+        guard partials[segment.source].map({ $0.time <= segment.time }) ?? true else { return }
+        guard captureAppName == nil || segment.source == .system else { return }
+        let sameTurn = pendingReplyTurn?.source == segment.source && pendingReplyTurn?.time == segment.time
+        guard LiveMeetingRequest.warrantsAutoReply(to: segment, separateInputs: captureAppName != nil,
+                                                   lastRequested: lastMeetingReplyTurn[segment.source], final: final) else {
+            if sameTurn || (pendingReplyTurn?.time ?? .infinity) < segment.time {
+                meetingReplyTask?.cancel()
+                pendingReplyTurn = nil
+            }
+            return
+        }
+        if !final && segment.text.split(whereSeparator: \.isWhitespace).count < 4 { return }
+        pendingReplyTurn = segment
+        if sameTurn && !final { return }
+        meetingReplyTask?.cancel()
+        let provider = selectedProvider?.id
+        let received = ContinuousClock.now
+        meetingReplyTask = Task {
+            if !final {
+                do { try await Task.sleep(for: .milliseconds(350)) }
+                catch { return }
+            }
+            await waitForCurrentModelJob()
+            guard !Task.isCancelled, let latest = pendingReplyTurn else { return }
+            pendingReplyTurn = nil
+            guard ContinuousClock.now - received < .seconds(6), captureReady, !isQuitting, runningID == nil,
+                  let meeting = activeMeeting, meeting.id == id, autoRepliesEnabled,
+                  selectedProvider?.id == provider else { return }
+            lastMeetingReplyTurn[latest.source] = latest.time
+            let language = meetingLanguage.flatMap { Locale(identifier: "en").localizedString(forIdentifier: $0) }
+            let request = LiveMeetingRequest(action: .suggest, passage: latest, speechLanguage: language,
+                                             phoneCall: meeting.meeting?.assistance?.isPhoneCall == true, automaticReply: true)
+            ask(session: meeting, prompt: request.action.title, useTools: false, brief: true, liveRequest: request)
+        }
+    }
+
     func requestLiveCards(force: Bool = false) {
         guard liveCardTask == nil, captureReady, !isPaused, let session = activeMeeting,
               let provider = selectedProvider, let last = session.segments.last else { return }
-        let context = String(session.transcript.suffix(12_000))
         let attempt = LiveCardAttempt(segment: last.id, provider: provider.id, assistance: session.meeting?.assistance)
         if failedCardAttempt != attempt {
             failedCardAttempt = attempt
             cardFailureCount = 0
         }
-        guard force || (context.count >= 120 && attempt != lastSuccessfulCardAttempt && cardFailureCount < 2) else { return }
+        guard force || (attempt != lastSuccessfulCardAttempt && cardFailureCount < 2) else { return }
+        let context = String(session.transcript.suffix(12_000))
+        guard force || context.count >= 120 else { return }
         liveCardStatus = "Checking the transcript…"
         liveCardTask = Task {
             defer { liveCardTask = nil }

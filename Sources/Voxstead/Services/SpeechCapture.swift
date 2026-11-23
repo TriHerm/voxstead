@@ -5,7 +5,7 @@ import ScreenCaptureKit
 import Speech
 
 @MainActor
-final class SpeechCapture {
+class SpeechCapture {
     static func macAudioStartIssue(_ error: Error) -> CaptureIssue {
         let cause = error as NSError
         if cause.domain == SCStreamErrorDomain && cause.code == SCStreamError.Code.userDeclined.rawValue {
@@ -168,7 +168,7 @@ final class SpeechCapture {
         guard node.outputFormat(forBus: 0) == format else {
             throw CaptureIssue(kind: .microphone, message: "The audio device changed during setup. Select a microphone and try again.")
         }
-        node.installTap(onBus: 0, bufferSize: 2048, format: format, block: tap)
+        node.installTap(onBus: 0, bufferSize: 512, format: format, block: tap)
         didInstallTap = true
         do {
             try audioEngine.start()
@@ -211,12 +211,8 @@ final class SpeechCapture {
 
     nonisolated static func livePreset(for kind: SessionKind, phoneCall: Bool = false) -> SpeechTranscriber.Preset {
         var preset = SpeechTranscriber.Preset.progressiveTranscription
-        if phoneCall {
-            preset.reportingOptions.insert(.fastResults)
-            preset.attributeOptions.insert(.audioTimeRange)
-        } else if kind == .meeting {
-            preset.reportingOptions.remove(.fastResults)
-        }
+        if kind == .meeting { preset.reportingOptions.insert(.fastResults) }
+        if phoneCall { preset.attributeOptions.insert(.audioTimeRange) }
         return preset
     }
 
@@ -351,7 +347,7 @@ private final class SpeechTrack {
         guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber], considering: naturalFormat) else {
             throw WorkspaceError("No compatible audio format was found for speech recognition.")
         }
-        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        let analyzer = SpeechAnalyzer(modules: [transcriber], options: .init(priority: .userInitiated, modelRetention: .whileInUse))
         try await SpeechCapture.configureVocabulary(vocabulary, on: analyzer)
         try await analyzer.prepareToAnalyze(in: format)
         return SpeechTrack(transcriber: transcriber, analyzer: analyzer, format: format, source: source,

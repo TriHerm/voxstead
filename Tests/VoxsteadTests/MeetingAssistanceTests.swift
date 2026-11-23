@@ -85,6 +85,11 @@ struct MeetingAssistanceTests {
     }
 
     @Test func phoneQuestionDetectionRecognizesQuestionsBeforeFinalPunctuation() {
+        for text in ["Puedes confirmar la fecha", "Bueno cuándo llega el pedido", "Me puedes decir el precio",
+                     "Cuéntame sobre tu experiencia", "Tell me about your project", "Please walk me through it"] {
+            #expect(PhoneCallTurns.invitesReply(text))
+        }
+        #expect(!PhoneCallTurns.invitesReply("Ya enviamos el documento ayer."))
         #expect(PhoneCallTurns.isQuestion("Could you send the proof"))
         #expect(PhoneCallTurns.isQuestion("So which option would you pick"))
         #expect(PhoneCallTurns.isQuestion("Is Tuesday okay?"))
@@ -176,12 +181,50 @@ struct MeetingAssistanceTests {
         #expect(pieces.compactMap(\.speaker) == ["You", "Caller"])
     }
 
+    @Test func meetingAutoRepliesUseNewQuestionsFromTheConversationInput() {
+        let remote = TranscriptSegment(time: 12, source: .system, text: "When should we send the draft?")
+        var local = remote
+        local.source = .microphone
+        #expect(LiveMeetingRequest.warrantsAutoReply(to: remote, separateInputs: true, lastRequested: 10))
+        #expect(!LiveMeetingRequest.warrantsAutoReply(to: remote, separateInputs: true, lastRequested: 12))
+        #expect(!LiveMeetingRequest.warrantsAutoReply(to: remote, separateInputs: true, lastRequested: 14))
+        #expect(!LiveMeetingRequest.warrantsAutoReply(to: local, separateInputs: true, lastRequested: nil))
+        #expect(LiveMeetingRequest.warrantsAutoReply(to: local, separateInputs: false, lastRequested: nil))
+        let request = LiveMeetingRequest(action: .suggest, passage: remote, automaticReply: true)
+        let context = request.context(for: VoiceSession(kind: .meeting, title: "Planning", segments: [remote]))
+        #expect(context.hasSuffix(remote.text))
+    }
+
+    @Test func replyLanguageAndMeaningAreIndependentInMeetingsAndCalls() throws {
+        let settings = MeetingAssistance(explanationLanguage: "Portuguese", replyLanguage: "English", replyMeaning: true)
+        for phone in [true, false] {
+            let request = LiveMeetingRequest(action: .suggest, speechLanguage: "French", phoneCall: phone)
+            let prompt = request.instructions(for: settings)
+            #expect(prompt.contains("Write the sentence in English"))
+            #expect(prompt.contains("meaning in Portuguese"))
+            #expect(!prompt.contains("Write it in French"))
+        }
+        let thought = LiveMeetingRequest(action: .suggest, speechLanguage: "French", thoughtToPhrase: "Me faltan dos días.", phoneCall: true)
+        #expect(thought.instructions(for: settings).contains("spoken reply in English"))
+        let context = thought.context(for: VoiceSession(kind: .meeting, title: "A call", segments: [
+            .init(time: 1, source: .system, text: "Unrelated private transcript.")
+        ]))
+        #expect(context.contains("Me faltan dos días."))
+        #expect(!context.contains("Unrelated"))
+        let legacy = try JSONDecoder().decode(MeetingAssistance.self, from: Data(#"{"mode":"conversation","explanationLanguage":"Spanish"}"#.utf8))
+        #expect(legacy.replyLanguage == nil)
+        for phrase in ConversationPhrase.allCases {
+            for language in ConversationPhrase.languages { #expect(phrase.text(in: language)?.isEmpty == false) }
+            #expect(phrase.text(in: "ja") == nil)
+        }
+    }
+
     @Test func onlyAutomaticPhoneRequestsCanDeclineToSuggest() {
-        let automatic = LiveMeetingRequest(action: .suggest, phoneCall: true, automaticPhoneReply: true)
+        let automatic = LiveMeetingRequest(action: .suggest, phoneCall: true, automaticReply: true)
         let manual = LiveMeetingRequest(action: .suggest, phoneCall: true)
-        #expect(automatic.shouldSkipPhoneAnswer(#"{"sentence":null,"meaning":null}"#))
-        #expect(!manual.shouldSkipPhoneAnswer(#"{"sentence":null,"meaning":null}"#))
-        #expect(!automatic.shouldSkipPhoneAnswer(#"{"sentence":"Could you repeat that?","meaning":null}"#))
+        #expect(automatic.shouldSkipAutomaticAnswer(#"{"sentence":null,"meaning":null}"#))
+        #expect(!manual.shouldSkipAutomaticAnswer(#"{"sentence":null,"meaning":null}"#))
+        #expect(!automatic.shouldSkipAutomaticAnswer(#"{"sentence":"Could you repeat that?","meaning":null}"#))
     }
 
     @Test @MainActor func supportPreferencesSurviveLibraryReloadWithoutChangingTranscript() throws {
