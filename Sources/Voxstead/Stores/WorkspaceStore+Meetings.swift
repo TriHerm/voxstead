@@ -120,7 +120,8 @@ extension WorkspaceStore {
             let language = meetingLanguage.flatMap { Locale(identifier: "en").localizedString(forIdentifier: $0) }
             let request = LiveMeetingRequest(action: .suggest, passage: latest, speechLanguage: language,
                                              phoneCall: meeting.meeting?.assistance?.isPhoneCall == true, automaticReply: true)
-            ask(session: meeting, prompt: request.action.title, useTools: false, brief: true, liveRequest: request)
+            ask(session: meeting, prompt: request.action.title, useTools: false, brief: true, liveRequest: request,
+                recognizedAt: received)
         }
     }
 
