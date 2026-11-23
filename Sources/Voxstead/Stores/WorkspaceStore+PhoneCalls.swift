@@ -154,10 +154,11 @@ extension WorkspaceStore {
               ) else { return }
         phoneTurns.markRequested(through: turn.upperBound, from: turn.lowerBound)
         lastMacPhoneReplyRequest = .now
-        requestPhoneReply(meeting, automatically: true)
+        requestPhoneReply(meeting, automatically: true, recognizedAt: phoneTurns.lastMacTranscriptUpdate)
     }
 
-    func requestPhoneReply(_ meeting: VoiceSession, automatically: Bool = false, focus: PhoneReplyFocus = .respond) {
+    func requestPhoneReply(_ meeting: VoiceSession, automatically: Bool = false, focus: PhoneReplyFocus = .respond,
+                           recognizedAt: ContinuousClock.Instant? = nil) {
         if !automatically {
             let turn = phoneTurns.speakers.latest
             phoneTurns.markRequested(through: turn?.end ?? phoneTurns.speakers.through, from: turn?.start)
@@ -166,6 +167,7 @@ extension WorkspaceStore {
         let language = meetingLanguage.flatMap { Locale(identifier: "en").localizedString(forIdentifier: $0) }
         let request = LiveMeetingRequest(action: .suggest, speechLanguage: language, phoneCall: true,
                                          automaticReply: automatically, phoneReplyFocus: focus)
-        ask(session: meeting, prompt: request.action.title, useTools: false, brief: true, liveRequest: request)
+        ask(session: meeting, prompt: request.action.title, useTools: false, brief: true, liveRequest: request,
+            recognizedAt: recognizedAt)
     }
 }

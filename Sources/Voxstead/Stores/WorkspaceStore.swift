@@ -898,7 +898,8 @@ final class WorkspaceStore {
     }
 
     func ask(session: VoiceSession, prompt: String, useTools: Bool, brief: Bool = false,
-             instruction: String? = nil, liveRequest: LiveMeetingRequest? = nil) {
+             instruction: String? = nil, liveRequest: LiveMeetingRequest? = nil,
+             recognizedAt: ContinuousClock.Instant? = nil) {
         let live = session.id == captureID
         guard modelTask == nil, (!live || session.kind == .meeting) else { return }
         var snapshot = session
@@ -920,12 +921,19 @@ final class WorkspaceStore {
         let servers = useTools ? document.settings.servers.filter(\.enabled) : []
         let isSuggestion = liveRequest?.action == .suggest
         generatingLiveReply = live && isSuggestion
+        let timing = liveRequest.flatMap { request in
+            live && isSuggestion && LiveReplyTiming.isEnabled
+                ? LiveReplyTiming(request: request, recognizedAt: recognizedAt) : nil
+        }
         runModelJob(id: session.id, status: servers.isEmpty ? "Asking \(profile.name)…" : "Connecting to MCP servers…",
                     automaticReply: liveRequest?.automaticReply == true) {
+            var outcome = "failed"
+            defer { timing?.record(outcome: Task.isCancelled ? "cancelled" : outcome) }
             let answer = try await self.runModel(snapshot, prompt: instruction ?? prompt, profile: profile,
-                                                 servers: servers, live: live, brief: brief, liveRequest: liveRequest)
+                                                 servers: servers, live: live, brief: brief, liveRequest: liveRequest, timing: timing)
             try Task.checkCancellation()
             if liveRequest?.shouldSkipAutomaticAnswer(answer) == true {
+                outcome = "no_reply"
                 return
             }
             let suggestion = isSuggestion ? try ReplySuggestion.decode(
@@ -934,7 +942,9 @@ final class WorkspaceStore {
             ) : nil
             if live, isSuggestion, self.captureID == session.id {
                 self.showLiveReply(suggestion)
+                if timing?.replyReadyAt == nil { timing?.replyReadyAt = .now }
             }
+            outcome = timing?.replyReadyAt != nil ? "reply_ready" : "session_ended"
             let exchange = Exchange(prompt: prompt, answer: suggestion?.sentence ?? answer,
                                     provider: profile.name, replySuggestion: suggestion)
             self.updateSession(session.id) { $0.exchanges.append(exchange) }
@@ -999,7 +1009,7 @@ final class WorkspaceStore {
 
     func runModel(
         _ session: VoiceSession, prompt: String, profile: ProviderProfile, servers: [ServerProfile],
-        live: Bool, brief: Bool, liveRequest: LiveMeetingRequest? = nil
+        live: Bool, brief: Bool, liveRequest: LiveMeetingRequest? = nil, timing: LiveReplyTiming? = nil
     ) async throws -> String {
         let isSuggestion = liveRequest?.action == .suggest
         let preview: (@MainActor @Sendable (String) -> Void)?
@@ -1011,6 +1021,7 @@ final class WorkspaceStore {
                 if isSuggestion {
                     if self.answerPreview.isEmpty, let sentence = ReplySuggestion.streamedSentence(in: text, maximumSentences: phoneReply ? 2 : nil) {
                         self.answerPreview = sentence
+                        timing?.replyReadyAt = .now
                     }
                 } else {
                     self.answerPreview = text
@@ -1066,6 +1077,7 @@ final class WorkspaceStore {
                 input = "Current question:\n\(prompt)\n\nTranscript excerpt:\n\(transcript)\n\nPrevious exchanges:\n\(String(history.suffix(8_000)))"
             }
             modelStatus = "Asking \(profile.name)…"
+            timing?.requestedAt = .now
             var response = try await model.reply(system: system, prompt: input, tools: declarations)
             if isSuggestion, !response.calls.isEmpty {
                 throw WorkspaceError("The provider requested an external tool for this suggestion. Try again.")

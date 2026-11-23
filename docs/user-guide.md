@@ -82,6 +82,22 @@ xcrun swift test
 
 Use full Xcode with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` if the standalone Command Line Tools SDK lacks SwiftUI macros. The tests use Python 3 for local test servers.
 
+### Measure live reply timing
+
+Quit Voxstead, then run the workspace build from the repository root with timing enabled.
+
+```bash
+VOXSTEAD_LOG_REPLY_TIMING=1 ./dist/Voxstead.app/Contents/MacOS/Voxstead
+```
+
+In a second terminal, read the local macOS log while testing meeting or call replies.
+
+```bash
+log stream --style compact --predicate 'subsystem == "labs.triherm.voxstead" AND category == "LiveReplyTiming"'
+```
+
+Each completed job reports milliseconds spent scheduling the reply, preparing the request, and waiting for the first readable sentence. Manual suggestions measure from request entry. Automatic meeting and Mac-audio suggestions also report timing from a recognized transcript update when available. This measures when a sentence is ready for display. It excludes acoustic recognition delay and screen rendering. The log records timings, mode, and outcome without speech, reply text, or credentials.
+
 [Product research notes](analysis-cluinn.md) · [MIT license](../LICENSE)
 
 
