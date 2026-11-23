@@ -14,6 +14,7 @@ struct LiveTranscriptPane: View {
     @State private var translations: [UUID: String] = [:]
     @State private var previews: [AudioSource: Preview] = [:]
     @State private var followLatest = true
+    @State private var finalizedRows: [Row] = []
 
     private struct Preview {
         let time: Double
@@ -41,10 +42,8 @@ struct LiveTranscriptPane: View {
         return store.activeMeeting
     }
 
-    private var rows: [Row] {
-        let finals = (meeting?.segments ?? []).sorted { $0.time < $1.time }.map { Row(segment: $0) }
-        let live = store.partials.values.sorted { $0.time < $1.time }.map { Row(segment: $0, isPartial: true) }
-        return finals + live
+    private var partialRows: [Row] {
+        store.partials.values.sorted { $0.time < $1.time }.map { Row(segment: $0, isPartial: true) }
     }
 
     var body: some View {
@@ -74,7 +73,7 @@ struct LiveTranscriptPane: View {
                 }
             }
             if isExpanded {
-                let currentRows = rows
+                let liveRows = partialRows
                 if let missingPair, captionsEnabled {
                     CaptionLanguagesButton(pair: missingPair) { revision = UUID() }.id(missingPair)
                 } else if let captionStatus, captionsEnabled {
@@ -89,15 +88,20 @@ struct LiveTranscriptPane: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .help("Choose the actual spoken language in meeting setup for clearer speech recognition.")
                 }
-                if currentRows.isEmpty {
+                if finalizedRows.isEmpty && liveRows.isEmpty {
                     Text("Waiting for speech…").font(.callout).foregroundStyle(.secondary)
                 } else {
-                    transcript(currentRows)
+                    transcript(liveRows)
                 }
             }
         }
         .padding(12)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 13))
+        .background(.background, in: RoundedRectangle(cornerRadius: 13))
+        .overlay { RoundedRectangle(cornerRadius: 13).strokeBorder(.separator).allowsHitTesting(false) }
+        .onChange(of: meeting?.segments.last?.id, initial: true) {
+            // Meeting capture appends finals in recognition order. The other input can finalize an older line later.
+            finalizedRows = (meeting?.segments ?? []).sorted { $0.time < $1.time }.map { Row(segment: $0) }
+        }
         .onChange(of: run.target) { _, _ in
             translations = [:]
             previews = [:]
@@ -116,23 +120,26 @@ struct LiveTranscriptPane: View {
         }
     }
 
-    private func transcript(_ rows: [Row]) -> some View {
-        ScrollViewReader { proxy in
+    private func transcript(_ liveRows: [Row]) -> some View {
+        let latest = liveRows.last ?? finalizedRows.last
+        return ScrollViewReader { proxy in
             VStack(alignment: .trailing, spacing: 6) {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 11) {
-                        ForEach(rows) { row in transcriptLine(row) }
+                        ForEach(finalizedRows) { row in transcriptLine(row) }
+                        ForEach(liveRows) { row in transcriptLine(row) }
                         Color.clear.frame(height: 1).id("latest")
                     }
                 }
+                .defaultScrollAnchor(followLatest ? .bottom : nil, for: .sizeChanges)
                 .frame(maxHeight: 245)
-                .onChange(of: rows.last?.id) { _, _ in
+                .onChange(of: latest?.id) { _, _ in
                     if followLatest { proxy.scrollTo("latest", anchor: .bottom) }
                 }
-                .onChange(of: rows.last?.segment.text, initial: true) { _, _ in
+                .onChange(of: latest?.segment.text, initial: true) { _, _ in
                     if followLatest { proxy.scrollTo("latest", anchor: .bottom) }
                 }
-                .onChange(of: rows.last.flatMap { caption(for: $0)?.text }) { _, _ in
+                .onChange(of: latest.flatMap { caption(for: $0)?.text }) { _, _ in
                     if followLatest { proxy.scrollTo("latest", anchor: .bottom) }
                 }
                 Toggle("Follow latest", isOn: $followLatest)
@@ -159,12 +166,17 @@ struct LiveTranscriptPane: View {
         let translated = caption(for: row)
         return VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("\(segment.timestamp) · \(segment.speaker ?? segment.source.title)")
+                Label(segment.speaker ?? segment.source.title,
+                      systemImage: segment.source == .microphone ? "mic" : "speaker.wave.2")
+                    .fontWeight(.medium)
+                if row.isPartial {
+                    Text("Live").foregroundStyle(.tint)
+                }
                 if let translated {
                     Text(translated.isPreview ? "\(preferredLanguage) · Preview" : preferredLanguage)
-                        .foregroundStyle(Color.accentColor)
                 }
                 Spacer()
+                Text(segment.timestamp).monospacedDigit()
                 if let meeting, store.selectedProvider != nil {
                     Button {
                         store.askLive(.explain, session: meeting, passage: segment)
@@ -179,10 +191,10 @@ struct LiveTranscriptPane: View {
             }
             .font(.caption).foregroundStyle(.secondary)
             if let translated {
-                Text(translated.text).font(.callout.weight(.medium)).textSelection(.enabled)
+                Text(translated.text).font(.body.weight(.medium)).textSelection(.enabled)
             }
             Text(segment.text)
-                .font(.callout)
+                .font(translated == nil ? .body : .callout)
                 .foregroundStyle(translated == nil ? Color.primary : Color.secondary)
                 .textSelection(.enabled)
         }

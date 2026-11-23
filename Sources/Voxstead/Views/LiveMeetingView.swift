@@ -40,13 +40,17 @@ struct LiveMeetingView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var question = ""
+    @State private var showQuestionField = false
+    @State private var transcriptViewportHeight: CGFloat = 260
     @State private var brief = true
     @State private var useTools = false
     @State private var showTranscript = true
     @State private var compact = false
+    @State private var panelWidth: CGFloat = 480
     @State private var showMeetingOptions = false
     @State private var showQuickPhrases = false
     @State private var thought = ""
+    @State private var replyContentHeight: CGFloat = 54
     @State private var showCards = false
     @State private var showQuestionOptions = false
     @State private var showPreparationOptions = false
@@ -66,6 +70,7 @@ struct LiveMeetingView: View {
         }
         .frame(minWidth: 420, minHeight: compact ? 300 : 385)
         .background(.background)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { panelWidth = $0 }
         .onAppear {
             store.livePanelVisible = true
             if store.activeMeeting == nil {
@@ -100,85 +105,53 @@ struct LiveMeetingView: View {
         let canAsk = !meeting.segments.isEmpty || !store.partials.isEmpty
         let phoneCall = preferences(for: meeting).isPhoneCall
         return VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "circle.fill")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(store.captureReady ? Color.green : Color.secondary)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 7) {
-                        Text(store.captureReady ? (phoneCall ? "Phone call · Listening" : "Live")
-                             : store.captureStatus ?? "Preparing…")
-                            .font(.headline)
-                        if store.captureReady, let language = store.meetingLanguage {
-                            Text(SpokenLanguagePicker.name(for: language)).font(.caption).foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .help("Language used to recognize speech. Pause to change it.")
-                        }
-                    }
-                    let microphone = store.captureMicrophoneName ?? "Microphone"
-                    Text(store.captureAppName.map { "\(microphone) + \($0)" } ?? microphone)
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                .layoutPriority(1)
-                Spacer()
-                Button { showQuickPhrases.toggle() } label: {
-                    Image(systemName: "text.book.closed")
-                }
-                .accessibilityLabel("Quick phrases")
-                .help("Quick phrases in five languages, available offline")
-                .popover(isPresented: $showQuickPhrases) {
-                    let settings = preferences(for: meeting)
-                    let spoken = settings.replyLanguage.flatMap { ExplanationLanguage.lookup($0)?.id }
-                        ?? store.meetingLanguage.flatMap(CaptionLanguagePair.code)
-                    VStack(alignment: .leading, spacing: 12) {
-                        if let provider = store.selectedProvider {
-                            Text("Phrase my thought").font(.headline)
-                            TextField("Write what you mean in any language", text: $thought, axis: .vertical)
-                                .lineLimit(1...4)
-                            ExplanationLanguagePicker(selection: Binding(
-                                get: { preferences(for: meeting).replyLanguage ?? "" },
-                                set: { value in updateAssistance(meeting.id) { $0.replyLanguage = value.isEmpty ? nil : value } }
-                            ), label: "Say my reply in", allowsOriginal: true, originalLabel: "Conversation language")
-                            Button("Phrase it with \(provider.name)") {
-                                let draft = thought.trimmingCharacters(in: .whitespacesAndNewlines)
-                                let language = store.meetingLanguage.map { SpokenLanguagePicker.name(for: $0) }
-                                let request = LiveMeetingRequest(action: .suggest, speechLanguage: language,
-                                                                 thoughtToPhrase: draft, phoneCall: settings.isPhoneCall)
-                                guard let current = store.activeMeeting, current.id == meeting.id else { return }
-                                store.ask(session: current, prompt: "Phrase my thought", useTools: false, brief: true, liveRequest: request)
-                                thought = ""
-                                showQuickPhrases = false
+            let header = panelWidth < (phoneCall ? 520 : 460)
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                : AnyLayout(HStackLayout(spacing: 10))
+            header {
+                HStack(spacing: 8) {
+                    Image(systemName: "circle.fill")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(store.captureReady ? Color.green : Color.secondary)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 7) {
+                            Text(store.captureReady ? (phoneCall ? "Live call" : "Live meeting")
+                                 : store.captureStatus ?? "Preparing…")
+                                .font(.headline)
+                            if store.captureReady, let language = store.meetingLanguage {
+                                Text(Locale(identifier: "en").localizedString(forLanguageCode: CaptionLanguagePair.code(for: language) ?? language) ?? language).font(.caption).foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .help("\(SpokenLanguagePicker.name(for: language)). Pause to change the spoken language.")
                             }
-                            .disabled(thought.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                      || thought.count > 500 || store.runningID != nil)
-                            if thought.count > 500 { Text("Use 500 characters or fewer.").font(.caption) }
-                            Divider()
                         }
-                        ConversationPhrasesView(spoken: spoken, meaning: ExplanationLanguage.lookup(settings.explanationLanguage)?.id)
+                        let microphone = store.captureMicrophoneName ?? "Microphone"
+                        let inputs = store.captureAppName.map { "\(microphone) + \($0)" } ?? microphone
+                        Text(inputs)
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1).help(inputs)
                     }
-                    .frame(width: 330).padding()
+                    Spacer(minLength: 0)
                 }
-                if !phoneCall {
-                    Button { compact.toggle() } label: {
-                        Image(systemName: compact ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
+                HStack(spacing: 8) {
+                    phrasesButton(meeting)
+                    Menu {
+                        Toggle("Keep above other windows", isOn: $store.meetingPanelPinned)
+                        if !phoneCall { Toggle("Compact panel", isOn: $compact) }
+                    } label: {
+                        Image(systemName: "macwindow")
                     }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel(compact ? "Expand panel" : "Compact panel")
-                    .help(compact ? "Expand panel" : "Compact panel")
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .accessibilityLabel("Window options")
+                    .help("Window options")
+                    Button(store.isPaused ? "Resume" : "Pause") { store.pauseOrResumeMeeting() }
+                        .disabled(!store.captureReady && store.captureStatus != "Paused")
+                        .help(store.isPaused ? "Resume recording with the selected microphone and language."
+                                             : "Pause recording to adjust the microphone or spoken language.")
+                    endButton(phoneCall: phoneCall)
+                        .disabled(store.captureStatus == "Pausing…" || store.captureStatus == "Finalizing transcript…")
                 }
-                Button { store.meetingPanelPinned.toggle() } label: {
-                    Image(systemName: store.meetingPanelPinned ? "pin.fill" : "pin")
-                }
-                .buttonStyle(.borderless)
-                .help(store.meetingPanelPinned ? "Unpin window" : "Keep window above other apps")
-                .accessibilityLabel(store.meetingPanelPinned ? "Unpin window" : "Pin window")
-                Button(store.isPaused ? "Resume" : "Pause") { store.pauseOrResumeMeeting() }
-                    .disabled(!store.captureReady && store.captureStatus != "Paused")
-                    .help(store.isPaused ? "Resume recording with the selected microphone and language."
-                                         : "Pause recording to adjust the microphone or spoken language.")
-                endButton(phoneCall: phoneCall)
-                    .disabled(store.captureStatus == "Pausing…" || store.captureStatus == "Finalizing transcript…")
+                .fixedSize(horizontal: true, vertical: false)
             }
             .padding(.horizontal, 13)
             .padding(.vertical, 11)
@@ -210,6 +183,47 @@ struct LiveMeetingView: View {
             } else {
                 meetingTools(meeting, canAsk: canAsk)
             }
+        }
+    }
+
+    private func phrasesButton(_ meeting: VoiceSession) -> some View {
+        Button { showQuickPhrases.toggle() } label: {
+            Label("Phrases", systemImage: "text.book.closed")
+                .fixedSize()
+        }
+        .accessibilityLabel("Quick phrases")
+        .help("Quick phrases in five languages, available offline")
+        .popover(isPresented: $showQuickPhrases) {
+            let settings = preferences(for: meeting)
+            let spoken = settings.replyLanguage.flatMap { ExplanationLanguage.lookup($0)?.id }
+                ?? store.meetingLanguage.flatMap(CaptionLanguagePair.code)
+            VStack(alignment: .leading, spacing: 12) {
+                if let provider = store.selectedProvider {
+                    Text("Phrase my thought").font(.headline)
+                    TextField("Write what you mean in any language", text: $thought, axis: .vertical)
+                        .lineLimit(1...4)
+                    ExplanationLanguagePicker(selection: Binding(
+                        get: { preferences(for: meeting).replyLanguage ?? "" },
+                        set: { value in updateAssistance(meeting.id) { $0.replyLanguage = value.isEmpty ? nil : value } }
+                    ), label: "Say my reply in", allowsOriginal: true, originalLabel: "Conversation language")
+                    Button("Phrase it with \(provider.name)") {
+                        let draft = thought.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let language = store.meetingLanguage.map { SpokenLanguagePicker.name(for: $0) }
+                        let request = LiveMeetingRequest(action: .suggest, speechLanguage: language,
+                                                         thoughtToPhrase: draft, phoneCall: settings.isPhoneCall)
+                        guard let current = store.activeMeeting, current.id == meeting.id else { return }
+                        store.ask(session: current, prompt: "Phrase my thought", useTools: false, brief: true, liveRequest: request)
+                        thought = ""
+                        showQuickPhrases = false
+                    }
+                    .disabled(thought.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              || thought.count > 500 || store.runningID != nil)
+                    if thought.count > 500 { Text("Use 500 characters or fewer.").font(.caption) }
+                    Divider()
+                }
+                ConversationPhrasesView(spoken: spoken, meaning: ExplanationLanguage.lookup(settings.explanationLanguage)?.id)
+            }
+            .frame(width: 330).padding()
         }
     }
 
@@ -351,12 +365,17 @@ struct LiveMeetingView: View {
                     Text(store.answerPreview).font(.title3.weight(.semibold)).textSelection(.enabled)
                 }
             } else if let reply = store.liveReply {
-                let phrase = ReplySuggestionView(suggestion: reply, copy: store.copyText, showMeaning: showMeaning)
-                ViewThatFits(in: .vertical) {
-                    phrase.fixedSize(horizontal: false, vertical: true)
-                    ScrollView { phrase.frame(maxWidth: .infinity, alignment: .leading) }.frame(height: 145)
+                ScrollView {
+                    ReplySuggestionView(suggestion: reply, copy: store.copyText, showMeaning: showMeaning)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 2)
                 }
-                .frame(maxHeight: 145, alignment: .topLeading)
+                .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height } action: { _, height in
+                    if height > 0 { replyContentHeight = ceil(height) }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(height: min(replyContentHeight, 145))
+                .id(reply.sentence)
             } else {
                 Text(store.isPaused ? "Recording paused" : (store.autoRepliesEnabled
                      ? "Listening for a turn to respond to…" : "Use What should I say? for a reply."))
@@ -464,6 +483,7 @@ struct LiveMeetingView: View {
                                        ),
                                        isExpanded: $showTranscript)
                         .id(meeting.id)
+                        .frame(maxHeight: max(120, transcriptViewportHeight - 24))
                     if (!store.generatingLiveReply && !store.answerPreview.isEmpty)
                         || (meeting.exchanges.last.map { $0.replySuggestion == nil } ?? false) {
                         answerCard(meeting)
@@ -473,6 +493,7 @@ struct LiveMeetingView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { transcriptViewportHeight = $0 }
             if store.selectedProvider != nil || store.liveReply != nil {
                 suggestedReplyPanel(meeting, waiting: store.generatingLiveReply && store.runningID == meeting.id,
                                 showMeaning: preferences(for: meeting).showsReplyMeaning)
@@ -497,23 +518,13 @@ struct LiveMeetingView: View {
                             Button("Cancel") { store.cancelModel() }
                         }
                     }
-                    HStack {
-                        TextField("Ask about this meeting", text: $question)
-                            .textFieldStyle(.plain)
-                            .onSubmit { submit(meeting, canAsk: canAsk) }
-                        Button { submit(meeting, canAsk: canAsk) } label: {
-                            Image(systemName: "arrow.up")
+                    if panelWidth < 460 {
+                        DisclosureGroup("Ask a question", isExpanded: $showQuestionField) {
+                            questionField(meeting, canAsk: canAsk)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .buttonBorderShape(.circle)
-                        .accessibilityLabel("Send question")
-                        .disabled(!canAsk || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                  || store.runningID != nil)
+                    } else {
+                        questionField(meeting, canAsk: canAsk)
                     }
-                    .padding(.leading, 10)
-                    .padding(.trailing, 4)
-                    .padding(.vertical, 4)
-                    .background(Color.primary.opacity(0.065), in: RoundedRectangle(cornerRadius: 10))
                     Text("AI actions send excerpts to \(provider.name).")
                         .font(.caption2).foregroundStyle(.secondary)
                 } else {
@@ -530,6 +541,26 @@ struct LiveMeetingView: View {
             .padding(12)
             .background(reduceTransparency ? AnyShapeStyle(.background) : AnyShapeStyle(.regularMaterial))
         }
+    }
+
+    private func questionField(_ meeting: VoiceSession, canAsk: Bool) -> some View {
+        HStack {
+            TextField("Ask about this meeting", text: $question)
+                .textFieldStyle(.plain)
+                .onSubmit { submit(meeting, canAsk: canAsk) }
+            Button { submit(meeting, canAsk: canAsk) } label: {
+                Image(systemName: "arrow.up")
+            }
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.circle)
+            .accessibilityLabel("Send question")
+            .disabled(!canAsk || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      || store.runningID != nil)
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 4)
+        .padding(.vertical, 4)
+        .background(Color.primary.opacity(0.065), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func answerCard(_ meeting: VoiceSession) -> some View {
@@ -690,7 +721,7 @@ struct LiveMeetingView: View {
         } label: {
             Image(systemName: "ellipsis.circle")
         }
-        .buttonStyle(.glass)
+        .buttonStyle(.borderless)
         .accessibilityLabel("Meeting help settings")
         .help("Change the language and style of meeting help.")
         .popover(isPresented: $showMeetingOptions) {

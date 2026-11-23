@@ -30,68 +30,55 @@ struct WorkspaceHomeView: View {
     }
 
     private var meetingCard: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 28) {
-                meetingIntro.frame(minWidth: 300, maxWidth: .infinity, alignment: .leading)
-                meetingActionsPreview
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Meetings and calls")
+                    .font(.largeTitle.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                Button("Try an example") { store.destination = .practice }
+                    .buttonStyle(.link)
             }
-            meetingIntro
-        }
-        .padding(24)
-        .background {
-            RoundedRectangle(cornerRadius: 20)
-                .fill(.background)
-            if !reduceTransparency {
-                RoundedRectangle(cornerRadius: 20)
-                    .fill(LinearGradient(colors: [Color.accentColor.opacity(0.17), Color.accentColor.opacity(0.04)],
-                                         startPoint: .topTrailing, endPoint: .bottomLeading))
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 12)], spacing: 12) {
+                startOption("Start a meeting", icon: "video", detail: "Follow the transcript and capture decisions.", tint: .accentColor) {
+                    store.showMeetingSetup = true
+                }
+                startOption("Phone call", icon: "phone", detail: "Read live captions and find a reply.", tint: .teal) {
+                    store.openPhoneCallSetup()
+                }
             }
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 20)
-                .strokeBorder(Color.accentColor.opacity(0.23))
-                .allowsHitTesting(false)
         }
     }
 
-    private var meetingIntro: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Image(systemName: "video.fill")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(Color.accentColor)
+    private func startOption(_ title: String, icon: String, detail: String, tint: Color,
+                             action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Image(systemName: icon).font(.title2.weight(.medium)).foregroundStyle(tint)
+                    Spacer()
+                    Image(systemName: "chevron.forward").font(.callout.weight(.semibold)).foregroundStyle(.secondary)
+                }
                 .accessibilityHidden(true)
-            Text("Meetings and calls")
-                .font(.largeTitle.weight(.semibold))
-                .accessibilityAddTraits(.isHeader)
-            Text("Choose Meeting to track decisions and tasks. Choose Phone call for one-on-one captions and short replies.")
-                .font(.callout).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 9) {
-                Button("Start a meeting") { store.showMeetingSetup = true }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!canStart)
-                Button("Phone call", action: store.openPhoneCallSetup)
-                    .buttonStyle(.bordered)
-                    .disabled(!canStart)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(.title3.weight(.semibold))
+                    Text(detail).font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            .controlSize(.large)
-            .padding(.top, 5)
-            Button("Try an example") { store.destination = .practice }
-                .buttonStyle(.link)
+            .padding(18)
+            .frame(maxWidth: .infinity, minHeight: 122, alignment: .topLeading)
+            .background {
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(reduceTransparency ? AnyShapeStyle(.background) : AnyShapeStyle(tint.opacity(0.07)))
+            }
+            .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(.separator) }
+            .contentShape(RoundedRectangle(cornerRadius: 14))
         }
-    }
-
-    private var meetingActionsPreview: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Explain", systemImage: "character.bubble")
-            Label("Catch me up", systemImage: "text.alignleft")
-            Label("What should I say?", systemImage: "bubble.left.and.text.bubble.right")
-        }
-        .font(.callout.weight(.medium))
-        .foregroundStyle(.secondary)
-        .padding(14)
-        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
-        .fixedSize()
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityHint(detail)
+        .disabled(!canStart)
     }
 
     private var dictationRow: some View {

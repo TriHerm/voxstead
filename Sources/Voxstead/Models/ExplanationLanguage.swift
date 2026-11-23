@@ -25,7 +25,17 @@ struct ExplanationLanguage: Identifiable, Sendable {
         }
     }
 
+    private static let byIdentifierOrName: [String: ExplanationLanguage] = {
+        var result: [String: ExplanationLanguage] = [:]
+        for language in all {
+            for key in [language.id, language.name, language.nativeName] where result[key] == nil {
+                result[key] = language
+            }
+        }
+        return result
+    }()
+
     static func lookup(_ value: String) -> ExplanationLanguage? {
-        all.first { $0.id == value || $0.name == value || $0.nativeName == value }
+        byIdentifierOrName[value]
     }
 }
