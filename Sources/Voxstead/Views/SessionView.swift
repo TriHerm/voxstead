@@ -167,7 +167,7 @@ struct SessionView: View {
                         Toggle("Follow speech", isOn: $followSpeech)
                         Spacer()
                         if store.selectedProvider != nil {
-                            Toggle("Auto replies", isOn: Binding(get: { store.autoRepliesEnabled }, set: store.setAutoReplies))
+                            Toggle("Auto replies", isOn: Binding(get: { store.autoRepliesEnabled }, set: { store.setAutoReplies($0) }))
                         }
                     }
                     .controlSize(.small).padding(.horizontal, 22).padding(.vertical, 8)
