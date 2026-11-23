@@ -11,7 +11,6 @@ struct MeetingSetupView: View {
     @State private var setupError: String?
     @State private var showPreparation: Bool
     @State private var preparation: String
-    @State private var showLanguageSupport = false
     @AppStorage("suggestedReplyLanguage") private var replyLanguage = ""
     @State private var explanationLanguage: String
     @State private var translateCaptions: Bool
@@ -59,8 +58,8 @@ struct MeetingSetupView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(phoneCall ? "Phone call" : "Start a meeting")
                         .font(.title2.weight(.semibold)).accessibilityAddTraits(.isHeader)
-                    Text(phoneCall ? "Choose audio from your phone on speaker or a call on this Mac."
-                         : "Check your audio and choose how to follow the conversation.")
+                    Text(phoneCall ? "Use your phone on speaker or capture a call on this Mac."
+                         : "Choose what to listen to and how you want to reply.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
             }
@@ -68,26 +67,14 @@ struct MeetingSetupView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 13) {
-                    if phoneCall {
-                        phonePreparation
-                        phoneLanguage
-                        audioSection
-                    } else {
-                        audioSection
-                        languageSection
-                        DisclosureGroup("Preparation notes", isExpanded: $showPreparation) {
-                            preparationControls
-                        }
-                        .padding(13)
-                        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 13))
+                    audioSection
+                    if phoneCall { phoneLanguage } else { languageSection }
+                    replySettings
+                    DisclosureGroup(phoneCall ? "Caller and preparation notes" : "Preparation notes", isExpanded: $showPreparation) {
+                        if phoneCall { phonePreparation } else { preparationControls }
                     }
-                    if let provider = store.selectedProvider {
-                        ExplanationLanguagePicker(selection: $replyLanguage, label: "Say my reply in", allowsOriginal: true,
-                                                  originalLabel: "Conversation language")
-                        Toggle("Suggest replies automatically", isOn: $automaticReplies)
-                        Text("Shares recent conversation and preparation notes with \(provider.name) for questions, requests, and longer turns from other participants.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                    .padding(13)
+                    .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 13))
                     if let setupError {
                         Label(setupError, systemImage: "exclamationmark.circle")
                             .font(.callout).foregroundStyle(.secondary)
@@ -155,6 +142,7 @@ struct MeetingSetupView: View {
                 let audioLabel = phoneCall ? "Call audio" : "Meeting audio"
                 LabeledContent(audioLabel) {
                     Picker(audioLabel, selection: $source) {
+                        if !sourceAvailable { Text("Unavailable app").tag(source) }
                         Text("Microphone only").tag("mic")
                         Text("Microphone + all Mac audio").tag("system")
                         if !apps.isEmpty {
@@ -168,7 +156,7 @@ struct MeetingSetupView: View {
             .disabled(audioCheck.isRunning || preparing)
             Divider()
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(audioCheck.message ?? (source == "mic"
+                Text(!sourceAvailable ? "The selected app is unavailable. Reopen it and refresh, or choose another source." : audioCheck.message ?? (source == "mic"
                     ? (phoneCall ? "For a phone on speaker, check that the microphone can hear both voices."
                        : "Check that your microphone can hear you.")
                     : "For browser calls, choose the browser playing the call."))
@@ -249,16 +237,6 @@ struct MeetingSetupView: View {
                     CaptionLanguagesButton(pair: .init(source: store.document.settings.locale, target: target.id)) {}
                 }
             }
-            DisclosureGroup("Reply options", isExpanded: $showLanguageSupport) {
-                VStack(alignment: .leading, spacing: 9) {
-                    if !translateCaptions {
-                        ExplanationLanguagePicker(selection: $explanationLanguage, label: "Explain in")
-                    }
-                    Toggle("Show the meaning of suggested replies", isOn: $includeMeaning)
-                }
-                .padding(.top, 6)
-            }
-            .font(.callout)
         }
         .disabled(audioCheck.isRunning || preparing)
         .padding(13)
@@ -267,7 +245,6 @@ struct MeetingSetupView: View {
 
     private var phonePreparation: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Label("Before the call", systemImage: "note.text").font(.headline)
             TextField("Caller’s name (optional)", text: $callerName)
                 .textFieldStyle(.roundedBorder)
             Text("Add goals, dates, codes, or limits. These notes stay visible during the call and guide your replies.")
@@ -282,27 +259,40 @@ struct MeetingSetupView: View {
                 Text("Keep your notes to 3,000 characters.").font(.caption).foregroundStyle(.secondary)
             }
         }
-        .padding(13)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 13))
+        .padding(.top, 7)
     }
 
     private var phoneLanguage: some View {
         VStack(alignment: .leading, spacing: 9) {
+            Label("Language", systemImage: "character.bubble").font(.headline)
             SpokenLanguagePicker(selection: $callLocale)
-            Toggle("Show the meaning of suggested replies", isOn: $includeMeaning)
-            if includeMeaning {
-                ExplanationLanguagePicker(selection: $explanationLanguage, label: "Explain in")
-            }
-            if store.selectedProvider == nil {
-                Text("Captions work on this Mac. Connect an AI provider in Settings for suggested replies and recaps.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .disabled(audioCheck.isRunning)
+        .padding(13)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 13))
+    }
+
+    private var replySettings: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Suggested replies", systemImage: "text.bubble").font(.headline)
+                .accessibilityAddTraits(.isHeader)
             if let provider = store.selectedProvider {
-                Text("Requesting a reply shares recent speech and your notes with \(provider.name).")
+                Toggle("Suggest replies automatically", isOn: $automaticReplies).toggleStyle(.switch)
+                ExplanationLanguagePicker(selection: $replyLanguage, label: "Say my reply in", allowsOriginal: true,
+                                          originalLabel: "Conversation language")
+                Toggle("Show the meaning of replies", isOn: $includeMeaning)
+                if !translateCaptions && (includeMeaning || !phoneCall) {
+                    ExplanationLanguagePicker(selection: $explanationLanguage, label: "Explain in")
+                }
+                Text("Reply suggestions share recent speech and your notes with \(provider.name).")
                     .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Captions work on this Mac. Connect a provider in Settings for suggested replies.")
+                    .font(.callout).foregroundStyle(.secondary)
             }
         }
-        .disabled(audioCheck.isRunning)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(13)
         .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 13))
     }
